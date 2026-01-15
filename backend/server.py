@@ -8,6 +8,7 @@ from google.generativeai import GenerativeModel
 import google.generativeai as genai
 from google.cloud import storage
 import base64
+import json
 
 
 # Import our custom tool
@@ -38,7 +39,7 @@ You are an automated Claim Validator Agent.
 
 JSON Output Format:
 {
-"status": "valid" | "invalid",
+"status": "APPROVED" | "REJECTED",
 "reason": "Explanation of the validation result.",
 "data": { "extracted_field": "value", ... }
 }
@@ -171,7 +172,45 @@ def validate_gcs():
         }
         
         response_events = agent.run(new_message)
-        return jsonify(response_events)
+        
+        # Post-process for validate-gcs to lift status/reason to top level
+        # and keep only data in the text body
+        enriched_events = []
+        for event in response_events:
+            try:
+                # The text is assumed to be JSON from the system prompt
+                raw_text = event['content']['parts'][0]['text']
+                # Clean up any potential markdown formatting if strictly adhering to previous prompt wasn't enough
+                clean_text = raw_text.replace('```json', '').replace('```', '').strip()
+                parsed = json.loads(clean_text)
+                
+                # Extract fields
+                status = parsed.get("status", "UNKNOWN").upper()
+                
+                # Fallback mapping just in case model hallucinates old values
+                if status == "VALID": status = "APPROVED"
+                if status == "INVALID": status = "REJECTED"
+                
+                reason = parsed.get("reason", "")
+                data_only = {"data": parsed.get("data", {})}
+                
+                # Reconstruct event
+                new_event = event.copy()
+                new_event['status'] = status
+                new_event['status_reason'] = reason
+                # Remove role as requested
+                if 'role' in new_event['content']:
+                    del new_event['content']['role']
+                
+                new_event['content']['parts'][0]['text'] = json.dumps(data_only)
+                
+                enriched_events.append(new_event)
+            except Exception as parse_error:
+                logging.warning(f"Failed to parse JSON for GCS response: {parse_error}")
+                # Fallback: just return original event if parsing fails
+                enriched_events.append(event)
+
+        return jsonify(enriched_events)
 
     except Exception as e:
         logging.error(f"Error processing GCS request: {e}")

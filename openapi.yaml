@@ -44,7 +44,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AgentResponse'
+                $ref: '#/components/schemas/GCSResponse'
         '400':
           description: Bad Request (Missing parameters)
         '500':
@@ -124,5 +124,36 @@ components:
                   properties:
                     text:
                       type: string
-                      description: "The model response. For validation, this contains the JSON output string."
-                      example: "{\"status\": \"valid\", \"data\": {...}}"
+                      description: "The model response."
+                      example: "{\"status\": \"valid\", ...}"
+
+    GCSResponse:
+      type: array
+      items:
+        type: object
+        properties:
+          author:
+            type: string
+            example: "claim_validator"
+          status:
+            type: string
+            enum: ["APPROVED", "REJECTED", "UNKNOWN"]
+            example: "APPROVED"
+          status_reason:
+            type: string
+            example: "All validation rules passed."
+          timestamp:
+            type: integer
+            example: 1715000000
+          content:
+            type: object
+            properties:
+              parts:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    text:
+                      type: string
+                      description: "JSON string containing only the data object"
+                      example: "{\"data\": {...}}"
