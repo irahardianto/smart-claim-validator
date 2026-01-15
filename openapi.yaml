@@ -1,0 +1,128 @@
+openapi: 3.0.3
+info:
+  title: SmartClaim Validator API
+  description: API for validating insurance claims using Gemini and MCP.
+  version: 1.0.0
+servers:
+  - url: http://localhost:8383
+    description: Local Development Server
+  - url: https://your-cloud-run-url.run.app
+    description: Production Server
+
+paths:
+  /run:
+    post:
+      summary: Run the Agent (Standard ADK)
+      description: Sends a message to the agent for processing. This is the standard ADK/GenAI endpoint format.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunRequest'
+      responses:
+        '200':
+          description: Agent response events
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentResponse'
+
+  /validate-gcs:
+    post:
+      summary: Validate Claim from GCS
+      description: Triggers validation for a file stored in Google Cloud Storage.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ValidateGCSRequest'
+      responses:
+        '200':
+          description: Validation result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentResponse'
+        '400':
+          description: Bad Request (Missing parameters)
+        '500':
+          description: Server Error
+
+components:
+  schemas:
+    RunRequest:
+      type: object
+      properties:
+        appName:
+          type: string
+          example: "claim_validator"
+        newMessage:
+          type: object
+          properties:
+            role:
+              type: string
+              example: "user"
+            parts:
+              type: array
+              items:
+                type: object
+                properties:
+                  text:
+                    type: string
+                  inlineData:
+                    type: object
+                    properties:
+                      mimeType:
+                        type: string
+                      data:
+                        type: string
+                        description: Base64 encoded data
+
+    ValidateGCSRequest:
+      type: object
+      required:
+        - gcs_uri
+      properties:
+        gcs_uri:
+          type: string
+          description: "Full GCS URI of the file to validate."
+          example: "gs://my-bucket/claims/claim123.png"
+        mime_type:
+          type: string
+          description: "MIME type of the file."
+          example: "image/png"
+          default: "image/png"
+        claim_type:
+          type: string
+          description: "Type of claim to validate against."
+          example: "medical"
+          enum: ["medical", "dental", "vision"]
+
+    AgentResponse:
+      type: array
+      items:
+        type: object
+        properties:
+          author:
+            type: string
+            example: "claim_validator"
+          timestamp:
+            type: integer
+            example: 1715000000
+          content:
+            type: object
+            properties:
+              role:
+                type: string
+                example: "model"
+              parts:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    text:
+                      type: string
+                      description: "The model response. For validation, this contains the JSON output string."
+                      example: "{\"status\": \"valid\", \"data\": {...}}"

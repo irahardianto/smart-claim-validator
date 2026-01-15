@@ -1,0 +1,8 @@
+google-adk
+mcp
+mcp-server-sqlite
+python-dotenv
+flask
+flask-cors
+google-generativeai
+google-cloud-storage
