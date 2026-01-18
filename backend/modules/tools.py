@@ -33,12 +33,23 @@ async def fetch_rules_mcp(claim_type: str) -> dict:
             result = await session.call_tool("read_query", arguments={"query": query})
             
             # Parse result
-            # The result from mcp-server-sqlite is usually a list of rows
             if result.content and len(result.content) > 0:
-                 # result.content is a list of TextContent or ImageContent
-                 # We expect JSON string in text
-                 data = json.loads(result.content[0].text)
-                 if data:
+                 raw_text = result.content[0].text
+                 print(f"DEBUG: Unknown JSON format. Raw text: {raw_text}")
+                 
+                 try:
+                     # Try standard JSON
+                     data = json.loads(raw_text)
+                 except json.JSONDecodeError:
+                     import ast
+                     try:
+                         # Fallback for Python-style string representation (single quotes)
+                         data = ast.literal_eval(raw_text)
+                     except Exception as e:
+                        print(f"Failed to parse via ast: {e}")
+                        raise
+                 
+                 if data and isinstance(data, list) and len(data) > 0:
                      return data[0] # Return the first matching rule
             
             return {}
