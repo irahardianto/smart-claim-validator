@@ -3,29 +3,25 @@ import logging
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
-# from google.adk import Agent, Tool
 from google.generativeai import GenerativeModel
 import google.generativeai as genai
 from google.cloud import storage
 import base64
 import json
-
+import openai
 
 # Import our custom tool
 from modules.tools import get_validation_rules
 
 load_dotenv()
 
-# Configure API Key
+# Configure API Keys
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 app = Flask(__name__)
 CORS(app)
 
 logging.basicConfig(level=logging.INFO)
-
-# Define the Gemini Model
-model = GenerativeModel("gemini-3-pro-preview")
 
 # Define the Agent System Instructions
 SYSTEM_INSTRUCTIONS = """
@@ -45,17 +41,28 @@ JSON Output Format:
 }
 """
 
-# Define the ADK Agent
-# Note: google-adk API might vary, assuming a standard Agent wrapper here.
-# If google-adk is not available, we can use raw genai with tools.
-# For this POC, we will use genai directly since 'google-adk' might be a placeholder in the prompt
-# but strictly following the prompt's request to use 'google-adk' if possible.
-# Given I cannot verify 'google-adk' installed, I will simulate the 'Agent' behavior using standard genai if needed,
-# but let's try to structure it as an "Agent" class as requested.
+# Tool Schema for OpenAI
+GET_VALIDATION_RULES_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "get_validation_rules",
+        "description": "Fetch validation rules for a specific claim type from the database.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "claim_type": {
+                    "type": "string",
+                    "description": "The type of claim to validate (e.g., 'medical', 'dental', 'vision')."
+                }
+            },
+            "required": ["claim_type"]
+        }
+    }
+}
 
-class ClaimValidatorAgent:
+class GeminiAgent:
     def __init__(self):
-        self.model = model
+        self.model = GenerativeModel("gemini-3-pro-preview")
         self.tools = [get_validation_rules]
         self.chat = self.model.start_chat(
             history=[
@@ -63,7 +70,7 @@ class ClaimValidatorAgent:
                 {"role": "model", "parts": ["Understood. I am ready to validate claims."]}
             ],
             enable_automatic_function_calling=True
-        ) # Note: enable_automatic_function_calling in genai setup
+        )
 
     def run(self, new_message):
         # new_message structure expects 'parts' with text/image
@@ -80,9 +87,7 @@ class ClaimValidatorAgent:
                     # Convert base64 to image part
                     user_parts.append({
                         "mime_type": part['inlineData']['mimeType'],
-                        "data": part['inlineData']['data'] # genai expects raw bytes or similar depending on version
-                        # Actually genai client expects 'data' as bytes if using 'blob' or similar.
-                        # We might need to decode base64 if passing as 'inline_data'.
+                        "data": part['inlineData']['data']
                     })
         
         response = self.chat.send_message(user_parts, tools=self.tools)
@@ -99,10 +104,113 @@ class ClaimValidatorAgent:
             }
         ]
 
-agent = ClaimValidatorAgent()
+class VLLMAgent:
+    def __init__(self):
+        self.client = openai.OpenAI(
+            base_url=os.getenv("VLLM_API_URL", "http://localhost:8000/v1"),
+            api_key=os.getenv("VLLM_API_KEY", "EMPTY")
+        )
+        # Assuming Qwen 72B is served as the model name, or we can fetch it.
+        # Ideally, env var or hardcoded if we know what vLLM is serving.
+        # We'll use a generic "model" or try to list it.
+        # For now, let's assume the user starts vLLM with a specific model name,
+        # but often vLLM endpoints map any model name to the served model if only one is served.
+        # Let's use a safe default or env var.
+        self.model_name = os.getenv("VLLM_MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct") 
+
+    def run(self, new_message):
+        """
+        Stateless run method for vLLM (OpenAI API).
+        Constructs full history for every request.
+        """
+        messages = [
+            {"role": "system", "content": SYSTEM_INSTRUCTIONS}
+        ]
+
+        # Convert ADK input to OpenAI format
+        user_content = []
+        if 'parts' in new_message:
+            for part in new_message['parts']:
+                if 'text' in part:
+                    user_content.append({"type": "text", "text": part['text']})
+                if 'inlineData' in part:
+                    # OpenAI expects data URL for images
+                    mime = part['inlineData']['mimeType']
+                    data = part['inlineData']['data']
+                    user_content.append({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{mime};base64,{data}"
+                        }
+                    })
+        
+        if user_content:
+            messages.append({"role": "user", "content": user_content})
+
+        # First call to model
+        response = self.client.chat.completions.create(
+            model=self.model_name,
+            messages=messages,
+            tools=[GET_VALIDATION_RULES_SCHEMA],
+            tool_choice="auto"
+        )
+
+        response_message = response.choices[0].message
+        
+        # Check for tool calls
+        if response_message.tool_calls:
+            # Append model's response to history (it wanted to call a tool)
+            messages.append(response_message)
+            
+            # Execute tools
+            for tool_call in response_message.tool_calls:
+                function_name = tool_call.function.name
+                function_args = json.loads(tool_call.function.arguments)
+                
+                if function_name == "get_validation_rules":
+                    logging.info(f"Calling tool {function_name} with {function_args}")
+                    tool_result = get_validation_rules(
+                        claim_type=function_args.get("claim_type")
+                    )
+                    
+                    messages.append({
+                        "tool_call_id": tool_call.id,
+                        "role": "tool",
+                        "name": function_name,
+                        "content": json.dumps(tool_result),
+                    })
+            
+            # Second call to model with tool results
+            final_response = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=messages
+            )
+            final_text = final_response.choices[0].message.content
+        else:
+            final_text = response_message.content
+
+        # Wrap in ADK format
+        return [
+            {
+                "content": {
+                    "parts": [{"text": final_text}],
+                    "role": "model"
+                },
+                "author": "claim_validator",
+                "timestamp": 0
+            }
+        ]
+
+# Instantiate Agents
+gemini_agent = GeminiAgent()
+vllm_agent = VLLMAgent()
 
 @app.route('/run', methods=['POST'])
 def run_agent():
+    """
+    Main endpoint used by frontend/client.
+    Now mapped to VLLMAgent (Qwen 72B via vLLM).
+    """
     data = request.json
     try:
         app_name = data.get('appName')
@@ -111,9 +219,9 @@ def run_agent():
         if not new_message:
              return jsonify({"error": "No message provided"}), 400
 
-        logging.info(f"Received request for {app_name}")
+        logging.info(f"Received request for {app_name} (routed to VLLMAgent)")
         
-        response_events = agent.run(new_message)
+        response_events = vllm_agent.run(new_message)
         return jsonify(response_events)
 
     except Exception as e:
@@ -140,21 +248,22 @@ def download_gcs_file(gcs_uri):
 
 @app.route('/validate-gcs', methods=['POST'])
 def validate_gcs():
+    """
+    Endpoint for GCS file validation.
+    Retains original GeminiAgent logic.
+    """
     data = request.json
     try:
         gcs_uri = data.get('gcs_uri')
-        mime_type = data.get('mime_type', 'image/png') # Default or require?
+        mime_type = data.get('mime_type', 'image/png')
         claim_type = data.get('claim_type', 'medical')
         
         if not gcs_uri:
             return jsonify({"error": "Missing gcs_uri"}), 400
             
-        logging.info(f"Processing GCS file: {gcs_uri}")
+        logging.info(f"Processing GCS file: {gcs_uri} (routed to GeminiAgent)")
         
         file_bytes = download_gcs_file(gcs_uri)
-        # GenAI expects client-side image data usually as base64 or bytes depending on the client method.
-        # But 'agent.run' helper we wrote expects ADK format which has 'inlineData' as base64.
-        
         base64_data = base64.b64encode(file_bytes).decode('utf-8')
         
         # Construct message compatible with our agent.run
@@ -171,34 +280,27 @@ def validate_gcs():
             ]
         }
         
-        response_events = agent.run(new_message)
+        # Use GEMINI AGENT here
+        response_events = gemini_agent.run(new_message)
         
         # Post-process for validate-gcs to lift status/reason to top level
-        # and keep only data in the text body
         enriched_events = []
         for event in response_events:
             try:
-                # The text is assumed to be JSON from the system prompt
                 raw_text = event['content']['parts'][0]['text']
-                # Clean up any potential markdown formatting if strictly adhering to previous prompt wasn't enough
                 clean_text = raw_text.replace('```json', '').replace('```', '').strip()
                 parsed = json.loads(clean_text)
                 
-                # Extract fields
                 status = parsed.get("status", "UNKNOWN").upper()
-                
-                # Fallback mapping just in case model hallucinates old values
                 if status == "VALID": status = "APPROVED"
                 if status == "INVALID": status = "REJECTED"
                 
                 reason = parsed.get("reason", "")
                 data_only = {"data": parsed.get("data", {})}
                 
-                # Reconstruct event
                 new_event = event.copy()
                 new_event['status'] = status
                 new_event['status_reason'] = reason
-                # Remove role as requested
                 if 'role' in new_event['content']:
                     del new_event['content']['role']
                 
@@ -207,7 +309,6 @@ def validate_gcs():
                 enriched_events.append(new_event)
             except Exception as parse_error:
                 logging.warning(f"Failed to parse JSON for GCS response: {parse_error}")
-                # Fallback: just return original event if parsing fails
                 enriched_events.append(event)
 
         return jsonify(enriched_events)

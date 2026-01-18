@@ -6,3 +6,4 @@ flask
 flask-cors
 google-generativeai
 google-cloud-storage
+openai
