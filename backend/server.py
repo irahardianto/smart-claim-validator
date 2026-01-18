@@ -116,7 +116,7 @@ class VLLMAgent:
         # For now, let's assume the user starts vLLM with a specific model name,
         # but often vLLM endpoints map any model name to the served model if only one is served.
         # Let's use a safe default or env var.
-        self.model_name = os.getenv("VLLM_MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct") 
+        self.model_name = os.getenv("VLLM_MODEL_NAME", "Qwen/Qwen3-VL-30B-A3B-Instruct") 
 
     def run(self, new_message):
         """

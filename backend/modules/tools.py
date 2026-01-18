@@ -4,10 +4,12 @@ import os
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+import sys
+
 # Configuration for the MCP Server (SQLite)
-# We assume 'mcp-server-sqlite' is installed and available in PATH
+# We assume 'mcp-server-sqlite' is installed in the same bin directory as the python interpreter
 MCP_SERVER_PARAMS = StdioServerParameters(
-    command=os.path.join(os.path.dirname(__file__), "../../backend/venv/bin/mcp-server-sqlite"),
+    command=os.path.join(os.path.dirname(sys.executable), "mcp-server-sqlite"),
     args=["--db-path", os.path.abspath(os.path.join(os.path.dirname(__file__), "../insurance.db"))],
     env=None
 )
