@@ -50,5 +50,7 @@ def get_validation_rules(claim_type: str) -> dict:
     try:
         return asyncio.run(fetch_rules_mcp(claim_type))
     except Exception as e:
-        print(f"Error fetching rules: {e}")
+        import traceback
+        error_msg = f"Error fetching rules: {e}\\n{traceback.format_exc()}"
+        print(error_msg)
         return {"error": str(e)}
